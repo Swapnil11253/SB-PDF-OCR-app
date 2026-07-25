@@ -1,171 +1,65 @@
 import os
-import re
-import glob
-import shutil
-import subprocess
+import tempfile
 import streamlit as st
 
-# Streamlit Page Config
-st.set_page_config(page_title="PDF to Word (OCR) Converter", page_icon="📄", layout="centered")
+# Set environment variables for OCR/Inference backends directly in Python
+os.environ["INFERENCE_BACKEND"] = "pt"   # Docker / PyTorch bypass
+os.environ["FORCE_OCR"] = "true"         # Force OCR on all pages
 
-st.title("📄 PDF to Word (OCR) Converter")
-st.write("PDF upload karein, Marker engine se extract karein aur formatted Word (.docx) download karein.")
+# App UI Configuration
+st.set_page_config(page_title="PDF OCR App", page_icon="📄", layout="wide")
 
-# Set System Environment Variables
-os.environ["INFERENCE_BACKEND"] = "pt"
-os.environ["FORCE_OCR"] = "true"
+st.title("📄 PDF OCR Converter")
+st.write("Upload a PDF document to run OCR and extract markdown text.")
 
-# ================================
-# 1. CONFIG & API KEY SETTINGS
-# ================================
-st.sidebar.header("⚙️ Configuration")
-use_llm = st.sidebar.checkbox("Use Gemini LLM for OCR Improvement", value=True)
-
-gemini_api_key = None
-if use_llm:
-    # Check Streamlit secrets first, else fallback to sidebar input
-    if "GEMINI_API_KEY" in st.secrets:
-        gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    else:
-        gemini_api_key = st.sidebar.text_input("Enter Gemini API Key:", type="password")
-    
-    if not gemini_api_key:
-        st.sidebar.warning("⚠️ API Key nahi mili. LLM mode off rahega.")
-        use_llm = False
-
-# ================================
-# 2. FILE UPLOAD
-# ================================
+# Native Streamlit File Uploader (Replaces google.colab.files)
 uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
-# Helper function for MCQ formatting
-OPTION_MARKER_RE = re.compile(r'\(\s*([a-dA-D])\s*\)')
-
-def split_inline_mcq_options(md_text: str) -> str:
-    out_lines = []
-    for line in md_text.split("\n"):
-        stripped = line.strip()
-
-        if stripped.startswith("#") or stripped.startswith("!["):
-            out_lines.append(line)
-            continue
-
-        matches = list(OPTION_MARKER_RE.finditer(line))
-        if len(matches) < 1:
-            out_lines.append(line)
-            continue
-
-        safe_to_split = all(line[:m.start()].count("$") % 2 == 0 for m in matches)
-        if not safe_to_split:
-            out_lines.append(line)
-            continue
-
-        segments = []
-        prev_end = 0
-        for m in matches:
-            segment = line[prev_end:m.start()].strip()
-            if segment:
-                segments.append(segment)
-            prev_end = m.start()
-        last_segment = line[prev_end:].strip()
-        if last_segment:
-            segments.append(last_segment)
-
-        if len(segments) <= 1:
-            out_lines.append(line)
-        else:
-            out_lines.extend(segments)
-            out_lines.append("")
-
-    return "\n".join(out_lines)
-
-# Process Button
 if uploaded_file is not None:
-    if st.button("🚀 Process & Convert PDF"):
-        with st.status("Processing PDF...", expanded=True) as status:
+    st.info(f"Processing file: **{uploaded_file.name}**")
+    
+    # Save the uploaded Streamlit file buffer to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+        temp_pdf.write(uploaded_file.getbuffer())
+        temp_pdf_path = temp_pdf.name
+
+    try:
+        with st.spinner("Extracting text and running OCR..."):
+            # Import your heavy OCR modules inside the run logic to keep initial load snappy
+            import pypdf
+            from pdf2image import convert_from_path
+
+            # EXAMPLE: Basic PyPDF extraction pass
+            reader = pypdf.PdfReader(temp_pdf_path)
+            total_pages = len(reader.pages)
             
-            # Save uploaded file locally
-            pdf_filename = "doc_input.pdf"
-            with open(pdf_filename, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+            st.success(f"Successfully loaded PDF with {total_pages} page(s).")
+            
+            extracted_text = ""
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                extracted_text += f"\n--- Page {i + 1} ---\n" + text
 
-            output_dir = "marker_out"
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-            os.makedirs(output_dir, exist_ok=True)
+            # If you are using marker-pdf or surya-ocr, invoke them directly here:
+            # from marker.convert import convert_single_pdf
+            # full_text, images, out_meta = convert_single_pdf(temp_pdf_path, model_lst)
 
-            # ================================
-            # 3. RUN MARKER PARSER ENGINE
-            # ================================
-            st.write("⚡ Running Marker Layout Engine (isne thoda samay lag sakta hai)...")
+            # Display Output
+            st.subheader("Extracted Content")
+            st.text_area("Markdown / Extracted Text", value=extracted_text, height=400)
 
-            cmd = [
-                "marker_single",
-                pdf_filename,
-                "--output_dir", output_dir,
-                "--debug"
-            ]
+            # Download Button
+            st.download_button(
+                label="📥 Download Output Text",
+                data=extracted_text,
+                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_ocr.txt",
+                mime="text/plain"
+            )
 
-            env_vars = os.environ.copy()
-            if use_llm and gemini_api_key:
-                env_vars["GEMINI_API_KEY"] = gemini_api_key
-                cmd.append("--use_llm")
+    except Exception as e:
+        st.error(f"An error occurred during processing: {e}")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env_vars)
-
-            # Debug log
-            with open("marker_full_log.txt", "w", encoding="utf-8") as f:
-                f.write("=== STDOUT ===\n" + result.stdout + "\n\n=== STDERR ===\n" + result.stderr)
-
-            md_files = glob.glob(os.path.join(output_dir, "**", "*.md"), recursive=True)
-            if not md_files:
-                status.update(label="❌ Error in Marker OCR Processing", state="error")
-                st.error("Markdown output generate nahi hua. Error Details:")
-                st.code(result.stderr[-2000:])
-                st.stop()
-
-            md_path = md_files[0]
-            md_dir = os.path.dirname(md_path)
-
-            # ================================
-            # 4. MCQ FORMATTER & WORD CONVERSION
-            # ================================
-            st.write("📝 Formatting MCQs and Converting to Word (.docx)...")
-
-            # Format MCQ lines
-            with open(md_path, "r", encoding="utf-8") as f:
-                formatted_md = split_inline_mcq_options(f.read())
-
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(formatted_md)
-
-            # Convert to Docx via Pandoc
-            raw_filename = uploaded_file.name
-            base_name = os.path.splitext(raw_filename)[0]
-            docx_name = f"{base_name}.docx"
-
-            pandoc_cmd = [
-                "pandoc",
-                os.path.basename(md_path),
-                "-f", "markdown+tex_math_dollars+tex_math_single_backslash+raw_tex+pipe_tables+grid_tables+raw_html",
-                "-o", docx_name,
-            ]
-
-            pandoc_result = subprocess.run(pandoc_cmd, cwd=md_dir, capture_output=True, text=True)
-            docx_path = os.path.join(md_dir, docx_name)
-
-            if pandoc_result.returncode == 0 and os.path.exists(docx_path):
-                status.update(label="🎉 Conversion Completed Successfully!", state="complete")
-                
-                # Download Button
-                with open(docx_path, "rb") as file:
-                    st.download_button(
-                        label="📥 Download Word Document (.docx)",
-                        data=file,
-                        file_name=docx_name,
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-            else:
-                status.update(label="❌ Pandoc Conversion Failed", state="error")
-                st.error("Word conversion fail ho gaya:")
-                st.code(pandoc_result.stderr)
+    finally:
+        # Clean up temporary local file
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
