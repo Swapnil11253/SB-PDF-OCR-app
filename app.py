@@ -18,7 +18,6 @@ install_cmd = [
     "pypdf",
     "pdf2image"
 ]
-subprocess.run(install_cmd, check=True)
 
 # System Environment Settings
 os.environ["INFERENCE_BACKEND"] = "pt"   # Docker Bypass
