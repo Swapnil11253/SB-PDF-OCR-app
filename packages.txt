@@ -1,3 +1,2 @@
+pandoc
 poppler-utils
-tesseract-ocr
-libz-dev
