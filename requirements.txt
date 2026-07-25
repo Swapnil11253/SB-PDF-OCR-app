@@ -1,9 +1,6 @@
 streamlit
-transformers==4.45.2
 marker-pdf>=1.0.0
-surya-ocr>=0.6.0
-click==8.1.8
-pypdf
-pdf2image
+pypandoc
 python-docx
-PyMuPDF
+surya-ocr>=0.6.0
+transformers==4.45.2
