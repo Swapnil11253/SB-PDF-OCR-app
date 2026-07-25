@@ -1,83 +1,317 @@
+"""
+PDF -> Word (native OMML equations) converter
+-----------------------------------------------
+Streamlit port of the original Colab notebook pipeline:
+
+  PDF --(marker_single)--> Markdown + images/tables
+      --(pandoc)---------> .docx (native tables, embedded images, most equations)
+      --(equation repair)-> .docx (any leftover raw "$...$" text turned into real OMML)
+
+Run locally:
+    pip install -r requirements.txt
+    # + system packages: pandoc, poppler-utils  (see packages.txt / README)
+    streamlit run app.py
+
+NOTE on marker-pdf: it downloads ~2-3 GB of model weights on first run and is
+much faster with a GPU. On Streamlit Community Cloud (CPU-only) conversion
+will be slow, especially with --force_ocr. Keep that in mind for large PDFs.
+"""
+
 import os
-import tempfile
+import glob
+import shutil
 import subprocess
+import tempfile
+from pathlib import Path
+
 import streamlit as st
-import pypandoc
 
+# ----------------------------------------------------------------------------
 # Page setup
-st.set_page_config(page_title="High-Precision Math PDF to Word", page_icon="📐", layout="wide")
+# ----------------------------------------------------------------------------
+st.set_page_config(page_title="PDF → Word (OMML Equations)", page_icon="📄", layout="centered")
 
-st.title("📐 Math PDF to MS Word (.docx) Converter")
-st.write("Extracts text and complex **Math Equations (OMML/LaTeX)** using Marker-PDF and Pandoc.")
+st.title("📄 PDF → Word Converter")
+st.caption("Native editable equations (OMML) · Native tables · Embedded images")
 
-uploaded_file = st.file_uploader("Upload PDF File", type=["pdf"])
+with st.expander("ℹ️ Ye app kya karta hai (kaise kaam karta hai)"):
+    st.markdown(
+        """
+1. **Marker** aapke PDF ko layout-aware tareeke se Markdown mein convert karta hai
+   (text, tables, images, equations sab alag-alag detect karke).
+2. **Pandoc** us Markdown ko `.docx` mein convert karta hai — equations native
+   Word equations (OMML) ban jaate hain, tables editable Word tables, aur
+   diagrams real embedded images.
+3. **Equation-repair step** un equations ko dhoondh kar fix karta hai jinhe
+   Pandoc parse nahi kar paaya (wo silently raw `$...$` text ke roop mein reh
+   jaate hain) — LaTeX → MathML → OMML convert karke unhe bhi real Word
+   equation bana deta hai.
+        """
+    )
 
-if uploaded_file is not None:
-    st.info(f"Processing: **{uploaded_file.name}**")
-    
-    # Save uploaded PDF to temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-        temp_pdf.write(uploaded_file.getbuffer())
-        temp_pdf_path = temp_pdf.name
+# ----------------------------------------------------------------------------
+# Cached one-time environment check (does NOT install anything at runtime;
+# assumes marker-pdf / pandoc / poppler-utils are already available in the
+# environment via requirements.txt + packages.txt — see README below).
+# ----------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def check_dependencies():
+    missing = []
+    for exe in ["pandoc", "marker_single", "pdftoppm"]:
+        if shutil.which(exe) is None:
+            missing.append(exe)
+    return missing
 
-    docx_output_path = os.path.join(tempfile.gettempdir(), "converted_math_output.docx")
-    md_output_path = os.path.join(tempfile.gettempdir(), "extracted_content.md")
+
+missing_tools = check_dependencies()
+if missing_tools:
+    st.error(
+        "⚠️ Ye system tools missing hain: **" + ", ".join(missing_tools) + "**.\n\n"
+        "Ye app khud inhe runtime par install nahi karta (Colab ke `!pip install` / "
+        "`!apt-get install` jaisa yahan nahi chalta). Deploy karte waqt "
+        "`requirements.txt` aur `packages.txt` (ya Dockerfile) mein inhe add karein — "
+        "neeche README section mein poori list di gayi hai."
+    )
+
+# ----------------------------------------------------------------------------
+# Session state defaults
+# ----------------------------------------------------------------------------
+if "final_docx_path" not in st.session_state:
+    st.session_state.final_docx_path = None
+if "final_docx_name" not in st.session_state:
+    st.session_state.final_docx_name = None
+if "log_lines" not in st.session_state:
+    st.session_state.log_lines = []
+
+
+def log(msg: str):
+    st.session_state.log_lines.append(msg)
+
+
+# ----------------------------------------------------------------------------
+# Core pipeline (mirrors the notebook, minus Colab-specific upload/download)
+# ----------------------------------------------------------------------------
+def run_marker(pdf_path: str, output_dir: str, force_ocr: bool, status):
+    cmd = ["marker_single", pdf_path, "--output_dir", output_dir, "--output_format", "markdown"]
+    if force_ocr:
+        cmd.append("--force_ocr")
+    cmd.append("--debug")
+
+    status.write(f"🔧 Running: `{' '.join(cmd)}`")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    log_path = os.path.join(output_dir, "marker_full_log.txt")
+    with open(log_path, "w") as f:
+        f.write("=== STDOUT ===\n" + result.stdout + "\n\n=== STDERR ===\n" + result.stderr)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Marker execution failed:\n{result.stderr[-3000:]}")
+
+    md_files = glob.glob(os.path.join(output_dir, "**", "*.md"), recursive=True)
+    if not md_files:
+        raise RuntimeError(f"No .md file found after marker run.\n{result.stderr[-3000:]}")
+
+    return md_files[0], log_path
+
+
+def run_pandoc(md_path: str, docx_name: str, status):
+    md_dir = os.path.dirname(md_path)
+    pandoc_cmd = [
+        "pandoc",
+        os.path.basename(md_path),
+        "-f",
+        "markdown+tex_math_dollars+tex_math_single_backslash+raw_tex+pipe_tables+grid_tables+raw_html",
+        "-o",
+        docx_name,
+    ]
+    status.write(f"🔧 Running (in `{md_dir}`): `{' '.join(pandoc_cmd)}`")
+    result = subprocess.run(pandoc_cmd, cwd=md_dir, capture_output=True, text=True)
+
+    docx_path = os.path.join(md_dir, docx_name)
+    if result.returncode != 0 or not os.path.exists(docx_path):
+        raise RuntimeError(f"Pandoc conversion failed.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
+
+    return docx_path, result.stderr
+
+
+# ---- Equation repair (LaTeX -> MathML -> OMML) ----
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+def _latex_to_omath_element(latex_src):
+    import latex2mathml.converter as _l2m
+    import mathml2omml as _mathml2omml
+    from lxml import etree as _etree
+
+    mathml = _l2m.convert(latex_src.strip())
+    omml_str = _mathml2omml.convert(mathml)  # '<m:oMath>...</m:oMath>', no ns decl
+    wrapped = f'<m:root xmlns:m="{_M_NS}">{omml_str}</m:root>'
+    return _etree.fromstring(wrapped.encode("utf-8"))[0]
+
+
+def repair_docx_equations(docx_in: str, docx_out: str):
+    """
+    Scan docx_in for leftover raw '$...$' / '$$...$$' text runs (pandoc's
+    parse-failure fallback) and replace each with a real OMML equation.
+    Writes the fixed file to docx_out. Returns (fixed_count, failed_count, notes).
+    """
+    import re as _re
+    import zipfile as _zipfile
+    from lxml import etree as _etree
+
+    notes = []
+    tmp_dir = docx_out + "_tmpext"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    with _zipfile.ZipFile(docx_in) as z:
+        z.extractall(tmp_dir)
+
+    doc_path = f"{tmp_dir}/word/document.xml"
+    tree = _etree.parse(doc_path)
+    root = tree.getroot()
+
+    fixed, failed = 0, 0
+    for t_el in root.iter(f"{{{_W_NS}}}t"):
+        text = (t_el.text or "").strip()
+        m = _re.fullmatch(r"\$\$(.+?)\$\$", text, _re.DOTALL) or _re.fullmatch(r"\$(.+?)\$", text, _re.DOTALL)
+        if not m:
+            continue
+        latex_src = next(g for g in m.groups() if g is not None)
+        try:
+            omath_el = _latex_to_omath_element(latex_src)
+        except Exception as e:
+            failed += 1
+            notes.append(f"[SKIP] could not repair: {latex_src[:70]!r} -> {e}")
+            continue
+        run_el = t_el.getparent()
+        run_el.getparent().replace(run_el, omath_el)
+        fixed += 1
+        notes.append(f"[FIXED] {latex_src[:70]!r}")
+
+    tree.write(doc_path, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    with _zipfile.ZipFile(docx_out, "w", _zipfile.ZIP_DEFLATED) as zout:
+        for base, _, files_ in os.walk(tmp_dir):
+            for fn in files_:
+                full = os.path.join(base, fn)
+                zout.write(full, os.path.relpath(full, tmp_dir))
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return fixed, failed, notes
+
+
+# ----------------------------------------------------------------------------
+# UI — upload + options
+# ----------------------------------------------------------------------------
+uploaded_pdf = st.file_uploader("Apna PDF upload karein", type=["pdf"])
+
+col1, col2 = st.columns(2)
+with col1:
+    force_ocr = st.checkbox(
+        "Force OCR",
+        value=True,
+        help="PDF ka embedded text layer ignore karke poora document fresh OCR se padhega. "
+        "Missing/incomplete paragraphs fix karta hai, lekin slower hai.",
+    )
+with col2:
+    do_repair = st.checkbox(
+        "Equation-repair step chalayein",
+        value=True,
+        help="Jo equations Pandoc parse nahi kar paya, unhe LaTeX → MathML → OMML "
+        "convert karke real Word equation banata hai.",
+    )
+
+convert_clicked = st.button("🚀 Convert to Word", type="primary", disabled=uploaded_pdf is None or bool(missing_tools))
+
+# ----------------------------------------------------------------------------
+# Run pipeline
+# ----------------------------------------------------------------------------
+if convert_clicked and uploaded_pdf is not None:
+    st.session_state.final_docx_path = None
+    st.session_state.final_docx_name = None
+    st.session_state.log_lines = []
+
+    work_dir = tempfile.mkdtemp(prefix="pdf2word_")
+    pdf_path = os.path.join(work_dir, "doc_input.pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(uploaded_pdf.getbuffer())
+
+    output_dir = os.path.join(work_dir, "marker_out")
+    os.makedirs(output_dir, exist_ok=True)
+
+    base_name = os.path.splitext(uploaded_pdf.name)[0]
+    docx_name = f"{base_name}.docx"
 
     try:
-        with st.spinner("Step 1/2: Running Marker AI to parse equations into LaTeX..."):
-            from marker.convert import convert_single_pdf
-            from marker.models import load_all_models
+        with st.status("⚡ Step 1/3 — Marker: PDF → Markdown...", expanded=True) as status:
+            md_path, marker_log_path = run_marker(pdf_path, output_dir, force_ocr, status)
+            status.write(f"💾 Markdown ready: `{os.path.basename(md_path)}`")
 
-            # Load Marker PDF AI Models
-            @st.cache_resource
-            def load_marker_models():
-                return load_all_models()
-
-            models = load_marker_models()
-            
-            # Extract text + LaTeX math formulas
-            full_text, images, out_meta = convert_single_pdf(temp_pdf_path, models)
-
-            # Save extracted markdown text with LaTeX math
-            with open(md_output_path, "w", encoding="utf-8") as f:
-                f.write(full_text)
-
-        with st.spinner("Step 2/2: Converting LaTeX equations to native Word (OMML) using Pandoc..."):
-            # Ensure Pandoc is available
+            # quick word-count sanity check, same as the notebook
             try:
-                pypandoc.convert_file(
-                    md_output_path,
-                    'docx',
-                    outputfile=docx_output_path,
-                    extra_args=['--from=markdown+tex_math_dollars+raw_tex']
-                )
-            except Exception as p_err:
-                # Fallback to direct subprocess if pypandoc wrapper fails
-                cmd = f"pandoc '{md_output_path}' -o '{docx_output_path}' --from=markdown+tex_math_dollars+raw_tex"
-                subprocess.run(cmd, shell=True, check=True)
+                from pypdf import PdfReader
 
-        st.success("Successfully converted PDF to Word with native editable equations!")
+                reader = PdfReader(pdf_path)
+                raw_text = "\n".join((page.extract_text() or "") for page in reader.pages)
+                raw_word_count = len(raw_text.split())
+                with open(md_path, "r", encoding="utf-8") as f:
+                    md_word_count = len(f.read().split())
+                status.write(f"📊 Word count — Original PDF: {raw_word_count} | Marker output: {md_word_count}")
+                if raw_word_count > 0 and md_word_count < 0.7 * raw_word_count:
+                    status.write("⚠️ Marker output PDF ke raw text se kaafi kam hai — kuch text drop ho sakta hai. Full log neeche download karein.")
+            except Exception as e:
+                status.write(f"(Word-count diagnostic skip: {e})")
 
-        # Tabs for Preview and Download
-        tab1, tab2 = st.tabs(["📄 Math Preview (Rendered)", "📥 Download Word File"])
+            status.update(label="✅ Step 1/3 done — Markdown generated", state="running")
 
-        with tab1:
-            st.markdown(full_text)
+        with st.status("📝 Step 2/3 — Pandoc: Markdown → .docx...", expanded=True) as status:
+            docx_path, pandoc_stderr = run_pandoc(md_path, docx_name, status)
+            if pandoc_stderr.strip():
+                status.write("⚠️ Pandoc warnings (ye equations aage repair step mein fix ho sakte hain):")
+                status.write(f"```\n{pandoc_stderr[:2000]}\n```")
+            status.update(label="✅ Step 2/3 done — .docx created", state="running")
 
-        with tab2:
-            with open(docx_output_path, "rb") as word_file:
-                st.download_button(
-                    label="📥 Download Editable MS Word File (.docx)",
-                    data=word_file,
-                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}_math.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+        final_path = docx_path
+        if do_repair:
+            with st.status("🔧 Step 3/3 — Repairing unparsed equations...", expanded=True) as status:
+                repaired_path = docx_path.replace(".docx", "_repaired.docx")
+                fixed_n, failed_n, notes = repair_docx_equations(docx_path, repaired_path)
+                for n in notes[:50]:
+                    status.write(n)
+                status.write(f"**Equation repair: {fixed_n} fixed, {failed_n} still unrepaired.**")
+                if failed_n:
+                    status.write("⚠️ Kuch equations abhi bhi auto-fix nahi ho paaye — doc kholke literal '$' search karke manually check karein.")
+                final_path = repaired_path if os.path.exists(repaired_path) else docx_path
+                status.update(label="✅ Step 3/3 done", state="complete")
+        else:
+            st.info("Equation-repair step skip kiya gaya (checkbox off tha).")
+
+        st.session_state.final_docx_path = final_path
+        st.session_state.final_docx_name = os.path.basename(final_path)
+        st.session_state.marker_log_path = marker_log_path
+        st.success("🎉 Conversion complete!")
 
     except Exception as e:
-        st.error(f"Error occurred during conversion: {e}")
+        st.error(f"❌ Conversion failed: {e}")
 
-    finally:
-        # Clean up temporary files
-        for path in [temp_pdf_path, docx_output_path, md_output_path]:
-            if os.path.exists(path):
-                os.remove(path)
+# ----------------------------------------------------------------------------
+# Download buttons
+# ----------------------------------------------------------------------------
+if st.session_state.final_docx_path and os.path.exists(st.session_state.final_docx_path):
+    with open(st.session_state.final_docx_path, "rb") as f:
+        st.download_button(
+            "📥 Download Word document (.docx)",
+            data=f.read(),
+            file_name=st.session_state.final_docx_name,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    marker_log_path = st.session_state.get("marker_log_path")
+    if marker_log_path and os.path.exists(marker_log_path):
+        with open(marker_log_path, "rb") as f:
+            st.download_button(
+                "📄 Download full Marker log (debugging ke liye)",
+                data=f.read(),
+                file_name="marker_full_log.txt",
+                mime="text/plain",
+            )
