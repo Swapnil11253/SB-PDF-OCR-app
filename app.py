@@ -22,6 +22,7 @@ import glob
 import shutil
 import subprocess
 import tempfile
+import traceback
 from pathlib import Path
 
 import streamlit as st
@@ -63,7 +64,12 @@ def check_dependencies():
     return missing
 
 
-missing_tools = check_dependencies()
+try:
+    missing_tools = check_dependencies()
+except Exception:
+    missing_tools = []
+    st.warning("⚠️ Environment check nahi ho paaya, aage badh rahe hain — agar conversion fail ho to error details neeche milenge.")
+
 if missing_tools:
     st.error(
         "⚠️ Ye system tools missing hain: **" + ", ".join(missing_tools) + "**.\n\n"
@@ -72,6 +78,12 @@ if missing_tools:
         "`requirements.txt` aur `packages.txt` (ya Dockerfile) mein inhe add karein — "
         "neeche README section mein poori list di gayi hai."
     )
+
+st.caption(
+    "⚠️ Marker-pdf models load hone mein 1-2+ GB RAM lagti hai. Free/low-RAM hosting "
+    "(jaise Streamlit Community Cloud ka free tier) par bade PDF ya paralel conversions "
+    "resource limit cross karke app crash kar sakte hain — chhote PDF se test karein."
+)
 
 # ----------------------------------------------------------------------------
 # Session state defaults
@@ -95,7 +107,10 @@ def run_marker(pdf_path: str, output_dir: str, force_ocr: bool, status):
     cmd = ["marker_single", pdf_path, "--output_dir", output_dir, "--output_format", "markdown"]
     if force_ocr:
         cmd.append("--force_ocr")
-    cmd.append("--debug")
+    # NOTE: --debug hata diya (default se off) — ye har page ki debug/layout
+    # images bhi save karta hai, jo CPU-only / low-RAM hosting (jaise
+    # Streamlit Community Cloud free tier) par memory aur disk dono zyada
+    # use karta hai aur silent OOM-crash ka ek common reason hai.
 
     status.write(f"🔧 Running: `{' '.join(cmd)}`")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -293,6 +308,15 @@ if convert_clicked and uploaded_pdf is not None:
 
     except Exception as e:
         st.error(f"❌ Conversion failed: {e}")
+        with st.expander("🔍 Full error details (technical)"):
+            st.code(traceback.format_exc())
+        st.info(
+            "Agar ye baar-baar ho raha hai aur koi Python error yahan nahi dikh raha "
+            "(sirf blank/generic 'Error running app' page dikhta hai), to zyada chance "
+            "hai ki hosting environment ki RAM/disk limit cross ho rahi hai — marker-pdf "
+            "ke models kaafi memory-heavy hain. Chhota PDF try karein, ya zyada RAM wale "
+            "plan / apne server par deploy karein."
+        )
 
 # ----------------------------------------------------------------------------
 # Download buttons
