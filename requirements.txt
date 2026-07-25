@@ -5,3 +5,5 @@ surya-ocr>=0.6.0
 click==8.1.8
 pypdf
 pdf2image
+python-docx
+PyMuPDF
