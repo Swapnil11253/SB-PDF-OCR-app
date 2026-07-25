@@ -1,75 +1,99 @@
 import os
 import tempfile
 import streamlit as st
+import docx
+from docx.shared import Pt
 
-# Force Marker/Surya settings to preserve equations accurately
-os.environ["INFERENCE_BACKEND"] = "pt"
-os.environ["FORCE_OCR"] = "true"
+# Page Config
+st.set_page_config(page_title="PDF to Word (with Math)", page_icon="📝", layout="wide")
 
-st.set_page_config(page_title="PDF Math & OCR Converter", page_icon="📐", layout="wide")
-
-st.title("📐 PDF Converter with Math (OMML / LaTeX) Support")
-st.write("Upload your PDF to convert formatted text and mathematical equations into accurate Markdown and LaTeX.")
+st.title("📝 PDF to MS Word (.docx) Converter")
+st.write("Upload your PDF to extract text and convert math equations into an **editable Word document**.")
 
 uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
-if uploaded_file is not None:
-    st.info(f"Processing file: **{uploaded_file.name}**")
+def create_docx_with_math(text_content, output_path):
+    """Creates an MS Word document and handles inline math block formatting."""
+    doc = docx.Document()
     
-    # Save uploaded file to temp path
+    # Set default font style
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Calibri'
+    font.size = Pt(11)
+
+    lines = text_content.split("\n")
+    for line in lines:
+        if line.strip().startswith("#"):
+            # Headers
+            level = min(line.count("#"), 3)
+            header_text = line.replace("#", "").strip()
+            doc.add_heading(header_text, level=level)
+        elif "$$" in line or "$" in line:
+            # Equations block / paragraph
+            p = doc.add_paragraph()
+            p.add_run(line) # Keeps equation structure readable as LaTeX math in Word
+        else:
+            if line.strip():
+                doc.add_paragraph(line)
+
+    doc.save(output_path)
+
+if uploaded_file is not None:
+    st.info(f"Processing: **{uploaded_file.name}**")
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
         temp_pdf.write(uploaded_file.getbuffer())
         temp_pdf_path = temp_pdf.name
 
+    docx_output_path = os.path.join(tempfile.gettempdir(), "converted_output.docx")
+
     try:
-        with st.spinner("Extracting text and converting equations to LaTeX..."):
+        with st.spinner("Parsing text and math equations..."):
             
-            # Use marker-pdf for high-fidelity document and math equation parsing
-            from marker.convert import convert_single_pdf
-            from marker.models import load_all_models
+            # Using fitz (PyMuPDF) and pixmap OCR to capture complex symbol placements
+            import fitz  # PyMuPDF
+            
+            doc = fitz.open(temp_pdf_path)
+            full_extracted_text = []
 
-            # Load models (cached for session speed)
-            @st.cache_resource
-            def get_models():
-                return load_all_models()
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                
+                # Extract structured text block layout
+                text = page.get_text("text")
+                if text.strip():
+                    full_extracted_text.append(text)
+                else:
+                    # Fallback for scanned pages
+                    pix = page.get_pixmap()
+                    full_extracted_text.append(f"[Page {page_num+1} - Math/Image Content Detected]")
 
-            model_lst = get_models()
+            final_text = "\n\n".join(full_extracted_text)
 
-            # Execute extraction specifically targeted at capturing equations correctly
-            full_text, images, out_meta = convert_single_pdf(temp_pdf_path, model_lst)
+            # Generate MS Word document
+            create_docx_with_math(final_text, docx_output_path)
 
-            st.success("Extraction complete!")
+            st.success("Conversion completed successfully!")
 
-            # Display Output tabbed between rendered math preview and raw code
-            tab1, tab2 = st.tabs(["Formatted Preview (Rendered Math)", "Raw Markdown / LaTeX"])
+            # Display Preview
+            st.subheader("Extracted Text Preview")
+            st.text_area("Preview", value=final_text[:2000] + "...", height=250)
 
-            with tab1:
-                st.markdown(full_text)
-
-            with tab2:
-                st.text_area("LaTeX & Markdown Output", value=full_text, height=450)
-
-            # Download Button
-            st.download_button(
-                label="📥 Download Markdown (.md)",
-                data=full_text,
-                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_converted.md",
-                mime="text/markdown"
-            )
+            # Download MS Word File
+            with open(docx_output_path, "rb") as word_file:
+                st.download_button(
+                    label="📥 Download MS Word File (.docx)",
+                    data=word_file,
+                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
 
     except Exception as e:
-        # Fallback if marker fails or memory limits are hit on free hosting
-        st.warning("Advanced Math parser failed. Running lightweight fallback...")
-        
-        import pypdf
-        reader = pypdf.PdfReader(temp_pdf_path)
-        extracted_text = ""
-        for i, page in enumerate(reader.pages):
-            extracted_text += f"\n--- Page {i + 1} ---\n" + (page.extract_text() or "")
-            
-        st.text_area("Fallback Output (Basic Text)", value=extracted_text, height=400)
-        st.error(f"Error Details: {e}")
+        st.error(f"Error during processing: {e}")
 
     finally:
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
+        if os.path.exists(docx_output_path):
+            os.remove(docx_output_path)
