@@ -258,25 +258,35 @@ with col2:
     )
 
 page_range = None
-if total_pages:
-    st.caption(f"📄 Is PDF mein **{total_pages} pages** hain.")
-    if total_pages > 8:
-        st.warning(
-            "⚠️ Ye PDF kaafi bada hai. Marker ke OCR/layout models chalane ke liye "
-            "kaafi RAM chahiye hoti hai — free/low-RAM hosting par bade PDFs beech mein "
-            "hi crash ('Error running app') kar sakte hain. Neeche page-range choose "
-            "karke chhote batch mein convert karna safer rahega."
-        )
-    limit_pages = st.checkbox("Sirf kuch pages convert karein (RAM bachane ke liye)", value=total_pages > 8)
-    if limit_pages:
-        start_p, end_p = st.slider(
-            "Page range (0-indexed, dono taraf inclusive)",
-            min_value=0,
-            max_value=max(total_pages - 1, 0),
-            value=(0, min(total_pages - 1, 7)),
-        )
-        page_range = f"{start_p}-{end_p}"
-        st.caption(f"👉 Convert hoga: page {start_p} se {end_p} (kul {end_p - start_p + 1} pages)")
+try:
+    if total_pages:
+        st.caption(f"📄 Is PDF mein **{total_pages} pages** hain.")
+        if total_pages > 8:
+            st.warning(
+                "⚠️ Ye PDF kaafi bada hai. Marker ke OCR/layout models chalane ke liye "
+                "kaafi RAM chahiye hoti hai — free/low-RAM hosting par bade PDFs beech mein "
+                "hi crash ('Error running app') kar sakte hain. Neeche page-range choose "
+                "karke chhote batch mein convert karna safer rahega."
+            )
+        if total_pages > 1:
+            limit_pages = st.checkbox("Sirf kuch pages convert karein (RAM bachane ke liye)", value=total_pages > 8)
+            if limit_pages:
+                start_p, end_p = st.slider(
+                    "Page range (0-indexed, dono taraf inclusive)",
+                    min_value=0,
+                    max_value=total_pages - 1,
+                    value=(0, min(total_pages - 1, 7)),
+                )
+                page_range = f"{start_p}-{end_p}"
+                st.caption(f"👉 Convert hoga: page {start_p} se {end_p} (kul {end_p - start_p + 1} pages)")
+        # total_pages == 1 par slider dikhane ki zaroorat nahi — poora (ek hi)
+        # page convert hoga, page-range control yahan meaningless hai.
+except Exception:
+    # Ye control sirf ek convenience/RAM-saving optimization hai — agar kisi
+    # wajah se fail ho, poori app crash hone ki jagah bina page-limit ke
+    # normal conversion chalne dete hain.
+    page_range = None
+    st.caption("(Page-range control load nahi ho paaya — poora document convert hoga.)")
 
 convert_clicked = st.button("🚀 Convert to Word", type="primary", disabled=uploaded_pdf is None or bool(missing_tools))
 
