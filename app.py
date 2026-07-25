@@ -103,17 +103,28 @@ def log(msg: str):
 # ----------------------------------------------------------------------------
 # Core pipeline (mirrors the notebook, minus Colab-specific upload/download)
 # ----------------------------------------------------------------------------
-def run_marker(pdf_path: str, output_dir: str, force_ocr: bool, status):
+def run_marker(pdf_path: str, output_dir: str, force_ocr: bool, status, page_range: str = None):
     cmd = ["marker_single", pdf_path, "--output_dir", output_dir, "--output_format", "markdown"]
     if force_ocr:
         cmd.append("--force_ocr")
+    if page_range:
+        cmd.extend(["--page_range", page_range])
     # NOTE: --debug hata diya (default se off) — ye har page ki debug/layout
     # images bhi save karta hai, jo CPU-only / low-RAM hosting (jaise
     # Streamlit Community Cloud free tier) par memory aur disk dono zyada
     # use karta hai aur silent OOM-crash ka ek common reason hai.
 
+    # Low-memory environment: threading libraries (torch/BLAS/OMP) spawn ek
+    # thread per CPU core by default, jo RAM-constrained container par
+    # peak memory usage badha deta hai. Single-threaded chalane se peak
+    # memory kam predictable/lower rehti hai (thoda slow ho sakta hai).
+    env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("MKL_NUM_THREADS", "1")
+    env.setdefault("TORCH_NUM_THREADS", "1")
+
     status.write(f"🔧 Running: `{' '.join(cmd)}`")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     log_path = os.path.join(output_dir, "marker_full_log.txt")
     with open(log_path, "w") as f:
@@ -220,13 +231,23 @@ def repair_docx_equations(docx_in: str, docx_out: str):
 # ----------------------------------------------------------------------------
 uploaded_pdf = st.file_uploader("Apna PDF upload karein", type=["pdf"])
 
+total_pages = None
+if uploaded_pdf is not None:
+    try:
+        from pypdf import PdfReader
+
+        total_pages = len(PdfReader(uploaded_pdf).pages)
+        uploaded_pdf.seek(0)  # reader ne stream consume kar liya, wapas rewind
+    except Exception:
+        total_pages = None
+
 col1, col2 = st.columns(2)
 with col1:
     force_ocr = st.checkbox(
         "Force OCR",
         value=True,
         help="PDF ka embedded text layer ignore karke poora document fresh OCR se padhega. "
-        "Missing/incomplete paragraphs fix karta hai, lekin slower hai.",
+        "Missing/incomplete paragraphs fix karta hai, lekin slower hai (aur zyada RAM leta hai).",
     )
 with col2:
     do_repair = st.checkbox(
@@ -235,6 +256,27 @@ with col2:
         help="Jo equations Pandoc parse nahi kar paya, unhe LaTeX → MathML → OMML "
         "convert karke real Word equation banata hai.",
     )
+
+page_range = None
+if total_pages:
+    st.caption(f"📄 Is PDF mein **{total_pages} pages** hain.")
+    if total_pages > 8:
+        st.warning(
+            "⚠️ Ye PDF kaafi bada hai. Marker ke OCR/layout models chalane ke liye "
+            "kaafi RAM chahiye hoti hai — free/low-RAM hosting par bade PDFs beech mein "
+            "hi crash ('Error running app') kar sakte hain. Neeche page-range choose "
+            "karke chhote batch mein convert karna safer rahega."
+        )
+    limit_pages = st.checkbox("Sirf kuch pages convert karein (RAM bachane ke liye)", value=total_pages > 8)
+    if limit_pages:
+        start_p, end_p = st.slider(
+            "Page range (0-indexed, dono taraf inclusive)",
+            min_value=0,
+            max_value=max(total_pages - 1, 0),
+            value=(0, min(total_pages - 1, 7)),
+        )
+        page_range = f"{start_p}-{end_p}"
+        st.caption(f"👉 Convert hoga: page {start_p} se {end_p} (kul {end_p - start_p + 1} pages)")
 
 convert_clicked = st.button("🚀 Convert to Word", type="primary", disabled=uploaded_pdf is None or bool(missing_tools))
 
@@ -259,7 +301,7 @@ if convert_clicked and uploaded_pdf is not None:
 
     try:
         with st.status("⚡ Step 1/3 — Marker: PDF → Markdown...", expanded=True) as status:
-            md_path, marker_log_path = run_marker(pdf_path, output_dir, force_ocr, status)
+            md_path, marker_log_path = run_marker(pdf_path, output_dir, force_ocr, status, page_range=page_range)
             status.write(f"💾 Markdown ready: `{os.path.basename(md_path)}`")
 
             # quick word-count sanity check, same as the notebook
