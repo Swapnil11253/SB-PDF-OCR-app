@@ -1,8 +1,7 @@
-Marker pdf'
-Pix2text
-Streamlit
-pdf2image
-Magic pdf
-nougat OCR meta
-poppler-utils
+streamlit
 pillow
+pdf2image
+pix2text
+marker-pdf
+nougat-ocr
+magic-pdf
