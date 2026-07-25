@@ -1,6 +1,9 @@
-streamlit
-marker-pdf>=1.0.0
-pypandoc
-python-docx
-surya-ocr>=0.6.0
-transformers==4.45.2
+streamlit>=1.33
+marker-pdf==1.10.2
+click==8.1.8
+pypdf
+pypdfium2==4.30.0
+Pillow
+latex2mathml
+mathml2omml
+lxml
