@@ -1,3 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch
 streamlit>=1.33
 marker-pdf==1.10.2
 pypdf
