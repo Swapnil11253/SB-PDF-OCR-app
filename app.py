@@ -1,95 +1,44 @@
-import sys
 import os
 import re
 import glob
 import shutil
 import subprocess
+import streamlit as st
+
+# Streamlit Page Config
+st.set_page_config(page_title="PDF to Word (OCR) Converter", page_icon="📄", layout="centered")
+
+st.title("📄 PDF to Word (OCR) Converter")
+st.write("PDF upload karein, Marker engine se extract karein aur formatted Word (.docx) download karein.")
+
+# Set System Environment Variables
+os.environ["INFERENCE_BACKEND"] = "pt"
+os.environ["FORCE_OCR"] = "true"
 
 # ================================
-# 1. ENVIRONMENT & DEPENDENCY LOCK
+# 1. CONFIG & API KEY SETTINGS
 # ================================
-print("📦 Checking Dependencies...")
-install_cmd = [
-    sys.executable, "-m", "pip", "install", "-q",
-    "transformers==4.45.2",
-    "marker-pdf>=1.0.0",
-    "surya-ocr>=0.6.0",
-    "click==8.1.8",
-    "pypdf",
-    "pdf2image"
-]
+st.sidebar.header("⚙️ Configuration")
+use_llm = st.sidebar.checkbox("Use Gemini LLM for OCR Improvement", value=True)
 
-# System Environment Settings
-os.environ["INFERENCE_BACKEND"] = "pt"   # Docker Bypass
-os.environ["FORCE_OCR"] = "true"         # Force OCR on all pages
-
-subprocess.run("apt-get update -y && apt-get install -y poppler-utils pandoc", shell=True, check=False)
-
-from google.colab import files, userdata
+gemini_api_key = None
+if use_llm:
+    # Check Streamlit secrets first, else fallback to sidebar input
+    if "GEMINI_API_KEY" in st.secrets:
+        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+    else:
+        gemini_api_key = st.sidebar.text_input("Enter Gemini API Key:", type="password")
+    
+    if not gemini_api_key:
+        st.sidebar.warning("⚠️ API Key nahi mili. LLM mode off rahega.")
+        use_llm = False
 
 # ================================
-# 2. CONFIG & FILE UPLOAD
+# 2. FILE UPLOAD
 # ================================
-USE_LLM = True
-try:
-    GEMINI_API_KEY = userdata.get("GEMINI_API_KEY")
-except Exception:
-    GEMINI_API_KEY = None
+uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
-if USE_LLM and not GEMINI_API_KEY:
-    print("⚠️ GEMINI_API_KEY nahi mila. USE_LLM ko False set kar rahe hain.")
-    USE_LLM = False
-
-print("\n🔄 Upload your PDF file:")
-uploaded = files.upload()
-raw_filename = list(uploaded.keys())[0]
-
-pdf_filename = "doc_input.pdf"
-if os.path.exists(pdf_filename):
-    os.remove(pdf_filename)
-os.rename(raw_filename, pdf_filename)
-
-output_dir = "marker_out"
-if os.path.exists(output_dir):
-    shutil.rmtree(output_dir)
-os.makedirs(output_dir, exist_ok=True)
-
-# ================================
-# 3. RUN MARKER PARSER ENGINE
-# ================================
-print("\n⚡ Running Marker Layout Engine...")
-
-# Cleaned CLI Command Syntax using --output_dir flag
-cmd = [
-    "marker_single",
-    pdf_filename,
-    "--output_dir", output_dir,
-    "--debug"
-]
-
-if USE_LLM and GEMINI_API_KEY:
-    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
-    cmd.append("--use_llm")
-
-result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ)
-
-# Debug Log Save
-with open("marker_full_log.txt", "w") as f:
-    f.write("=== STDOUT ===\n" + result.stdout + "\n\n=== STDERR ===\n" + result.stderr)
-
-md_files = glob.glob(os.path.join(output_dir, "**", "*.md"), recursive=True)
-if not md_files:
-    print("❌ Error: Markdown output generate nahi hua. Full log Check Karein:")
-    print(result.stderr[-3000:])
-    raise SystemExit(1)
-
-md_path = md_files[0]
-md_dir = os.path.dirname(md_path)
-print(f"🎉 Success! Generated Markdown path: {md_path}")
-
-# ================================
-# 4. MCQ FORMATTER & WORD CONVERSION
-# ================================
+# Helper function for MCQ formatting
 OPTION_MARKER_RE = re.compile(r'\(\s*([a-dA-D])\s*\)')
 
 def split_inline_mcq_options(md_text: str) -> str:
@@ -130,29 +79,93 @@ def split_inline_mcq_options(md_text: str) -> str:
 
     return "\n".join(out_lines)
 
-with open(md_path, "r", encoding="utf-8") as f:
-    formatted_md = split_inline_mcq_options(f.read())
+# Process Button
+if uploaded_file is not None:
+    if st.button("🚀 Process & Convert PDF"):
+        with st.status("Processing PDF...", expanded=True) as status:
+            
+            # Save uploaded file locally
+            pdf_filename = "doc_input.pdf"
+            with open(pdf_filename, "wb") as f:
+                f.write(uploaded_file.getbuffer())
 
-with open(md_path, "w", encoding="utf-8") as f:
-    f.write(formatted_md)
+            output_dir = "marker_out"
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
 
-# Convert Markdown to editable Word (.docx)
-base_name = os.path.splitext(raw_filename)[0]
-docx_name = f"{base_name}.docx"
+            # ================================
+            # 3. RUN MARKER PARSER ENGINE
+            # ================================
+            st.write("⚡ Running Marker Layout Engine (isne thoda samay lag sakta hai)...")
 
-pandoc_cmd = [
-    "pandoc",
-    os.path.basename(md_path),
-    "-f", "markdown+tex_math_dollars+tex_math_single_backslash+raw_tex+pipe_tables+grid_tables+raw_html",
-    "-o", docx_name,
-]
+            cmd = [
+                "marker_single",
+                pdf_filename,
+                "--output_dir", output_dir,
+                "--debug"
+            ]
 
-result = subprocess.run(pandoc_cmd, cwd=md_dir, capture_output=True, text=True)
+            env_vars = os.environ.copy()
+            if use_llm and gemini_api_key:
+                env_vars["GEMINI_API_KEY"] = gemini_api_key
+                cmd.append("--use_llm")
 
-docx_path = os.path.join(md_dir, docx_name)
-if result.returncode == 0 and os.path.exists(docx_path):
-    print(f"\n🎉 Word Document Ready & Downloading: {docx_path}")
-    files.download(docx_path)
-else:
-    print("❌ Pandoc conversion failed:")
-    print(result.stderr)
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env_vars)
+
+            # Debug log
+            with open("marker_full_log.txt", "w", encoding="utf-8") as f:
+                f.write("=== STDOUT ===\n" + result.stdout + "\n\n=== STDERR ===\n" + result.stderr)
+
+            md_files = glob.glob(os.path.join(output_dir, "**", "*.md"), recursive=True)
+            if not md_files:
+                status.update(label="❌ Error in Marker OCR Processing", state="error")
+                st.error("Markdown output generate nahi hua. Error Details:")
+                st.code(result.stderr[-2000:])
+                st.stop()
+
+            md_path = md_files[0]
+            md_dir = os.path.dirname(md_path)
+
+            # ================================
+            # 4. MCQ FORMATTER & WORD CONVERSION
+            # ================================
+            st.write("📝 Formatting MCQs and Converting to Word (.docx)...")
+
+            # Format MCQ lines
+            with open(md_path, "r", encoding="utf-8") as f:
+                formatted_md = split_inline_mcq_options(f.read())
+
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(formatted_md)
+
+            # Convert to Docx via Pandoc
+            raw_filename = uploaded_file.name
+            base_name = os.path.splitext(raw_filename)[0]
+            docx_name = f"{base_name}.docx"
+
+            pandoc_cmd = [
+                "pandoc",
+                os.path.basename(md_path),
+                "-f", "markdown+tex_math_dollars+tex_math_single_backslash+raw_tex+pipe_tables+grid_tables+raw_html",
+                "-o", docx_name,
+            ]
+
+            pandoc_result = subprocess.run(pandoc_cmd, cwd=md_dir, capture_output=True, text=True)
+            docx_path = os.path.join(md_dir, docx_name)
+
+            if pandoc_result.returncode == 0 and os.path.exists(docx_path):
+                status.update(label="🎉 Conversion Completed Successfully!", state="complete")
+                
+                # Download Button
+                with open(docx_path, "rb") as file:
+                    st.download_button(
+                        label="📥 Download Word Document (.docx)",
+                        data=file,
+                        file_name=docx_name,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+            else:
+                status.update(label="❌ Pandoc Conversion Failed", state="error")
+                st.error("Word conversion fail ho gaya:")
+                st.code(pandoc_result.stderr)
