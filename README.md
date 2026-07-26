@@ -9,12 +9,32 @@ Streamlit version. Same 3-tool pipeline:
 4. **pandoc** — cleaned Markdown → `.docx`.
 5. **OMML repair pass** — jo bhi TeX pandoc khud na convert kar paya, use `latex2mathml` + `mathml2omml` se real Word equations bana deta hai.
 
-## ⚠️ Important — yeh app GPU machine par chalao
+## ⚠️ Important — Streamlit Community Cloud par yeh (reliably) nahi chalega
 
-MinerU + pix2tex + PaddleOCR sab heavy models hain jo pehli baar HuggingFace
-se download hote hain aur GPU par best chalte hain. **Streamlit Community
-Cloud jaisi free/shared hosting par yeh nahi chalega** — apne GPU wale
-server/desktop/Colab-VM par local run karo.
+MinerU + pix2tex + PaddleOCR sab heavy models hain (multi-GB, HuggingFace se
+pehli baar download hote hain) aur GPU par best chalte hain. Streamlit
+Community Cloud (free tier) mein:
+
+- No GPU (CPU-only — MinerU/pix2tex/PaddleOCR bahut slow ya OOM ho sakte hain)
+- Limited RAM (~1 GB typically) aur ephemeral/limited disk
+- Build/deploy timeouts jo `mineru[all]` jaisi heavy install ko fail kar sakte hain
+- `mineru` command PATH par install ho bhi jaaye, resource limits ke wajah se
+  pipeline crash/hang ho sakti hai
+
+Agar tumhe `FileNotFoundError: [Errno 2] No such file or directory: 'mineru'`
+jaisa error mil raha hai Streamlit Cloud par, iska matlab hai `mineru[all]`
+ka pip install us build mein fail/skip ho gaya (build logs check karo) — aur
+chahe woh install ho bhi jaaye, poora pipeline us free tier par practically
+nahi chalega.
+
+**Recommended**: apne GPU wale server/desktop/VM par local run karo (neeche
+Setup dekho), ya self-hosted Docker container, ya Hugging Face Spaces
+(GPU tier) par deploy karo.
+
+`packages.txt` file is repo mein already included hai (Streamlit Community
+Cloud isse padh kar `poppler-utils` aur `pandoc` apt se install karta hai) —
+lekin yeh sirf poppler/pandoc ke liye hai, `mineru`/`torch`/`paddleocr` jaisi
+heavy Python deps ke resource-requirement ka fix nahi.
 
 ## Setup (Ubuntu/Debian + NVIDIA GPU maan kar)
 

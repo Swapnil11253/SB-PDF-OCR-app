@@ -27,6 +27,23 @@ import numpy as np
 import streamlit as st
 
 # ----------------------------------------------------------------------
+# System dependency checks — mineru/pandoc/poppler are external binaries,
+# not Python packages. Even if they're listed in requirements.txt,
+# `mineru` specifically needs its console_script on PATH, and pandoc /
+# poppler-utils are apt packages (see packages.txt), not pip packages.
+# We check up front instead of letting subprocess.run() crash with a raw
+# FileNotFoundError deep in the pipeline.
+# ----------------------------------------------------------------------
+def check_system_deps():
+    checks = {
+        "mineru": shutil.which("mineru"),
+        "pandoc": shutil.which("pandoc"),
+        "pdftoppm (poppler-utils)": shutil.which("pdftoppm"),
+    }
+    missing = [name for name, path in checks.items() if not path]
+    return missing
+
+# ----------------------------------------------------------------------
 # Page config
 # ----------------------------------------------------------------------
 st.set_page_config(page_title="PDF to Word — MinerU + pix2tex + PaddleOCR", layout="wide")
@@ -76,8 +93,20 @@ def pdf_has_significant_hindi(path, threshold_ratio=0.15):
 
 
 def run_mineru(pdf_path, out_dir, use_devanagari_mode):
+    mineru_bin = shutil.which("mineru")
+    if not mineru_bin:
+        raise FileNotFoundError(
+            "'mineru' command nahi mila is server par. Yeh 'mineru[all]' pip "
+            "package install hone ke baad bhi ho sakta hai agar: (1) install "
+            "fail/skip ho gaya (build logs check karo), (2) console_script "
+            "PATH par nahi hai, ya (3) yeh app aisi hosting (jaise Streamlit "
+            "Community Cloud) par chal raha hai jahan itni heavy ML pipeline "
+            "(GBs ke models, GPU-preferred) chalti hi nahi. README.md ka "
+            "'Setup' section dekho — is app ko apne GPU machine/server par "
+            "local chalana recommended hai."
+        )
     lang_args = ["-l", "devanagari"] if use_devanagari_mode else []
-    cmd = ["mineru", "-p", pdf_path, "-o", out_dir, "-b", "pipeline", "-f", "true"] + lang_args
+    cmd = [mineru_bin, "-p", pdf_path, "-o", out_dir, "-b", "pipeline", "-f", "true"] + lang_args
     result = subprocess.run(cmd, capture_output=True, text=True)
     return cmd, result
 
@@ -381,6 +410,23 @@ with st.sidebar:
         "downloads chahiye). Yeh app usually local GPU machine par chalao, "
         "Streamlit Cloud jaisi free hosting par nahi chalega."
     )
+
+_missing_deps = check_system_deps()
+if _missing_deps:
+    st.error(
+        "⚠️ Yeh system binaries missing hain: **" + ", ".join(_missing_deps) + "**.\n\n"
+        "- `mineru` missing ho to: `pip install -U \"mineru[all]\"` chalao aur confirm karo "
+        "ki `mineru --help` terminal mein chalta hai.\n"
+        "- `pandoc` / `pdftoppm` missing ho to: yeh apt/system packages hain — "
+        "`sudo apt-get install poppler-utils pandoc` (ya deployment platform ka "
+        "`packages.txt` mechanism, jo Streamlit Community Cloud use karta hai).\n\n"
+        "**Agar tum Streamlit Community Cloud par ho:** iska free tier is pipeline "
+        "(MinerU + pix2tex + PaddleOCR ke multi-GB models, GPU-preferred workload) "
+        "ke liye resource-wise fit nahi hai — RAM/disk/build-time limits hit ho "
+        "jaayenge. Isko apne GPU wale VM/server par self-host karna, ya Hugging Face "
+        "Spaces (GPU tier) jaisi platform use karna better rahega. Details README.md mein hain."
+    )
+    st.stop()
 
 # ----------------------------------------------------------------------
 # Main flow
