@@ -1,11 +1,15 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-
-torch
-streamlit>=1.33
-marker-pdf==1.10.2
+streamlit>=1.32
+numpy
 pypdf
 pypdfium2==4.30.0
-Pillow
+lxml
 latex2mathml
 mathml2omml
-lxml
+
+# Heavy ML deps — install these separately, GPU build recommended
+# (see README.md for exact commands, since paddlepaddle-gpu needs a
+# special index URL and mineru[all] pulls a large model stack)
+mineru[all]
+pix2tex[gui]
+paddleocr
+torch
