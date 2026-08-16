@@ -1,6 +1,8 @@
 import streamlit as st
 import tempfile
 import os
+import fitz  # PyMuPDF
+from docx import Document
 
 # ======================================================================
 # CONFIGURATION & CONSTANTS
@@ -18,19 +20,31 @@ LANG_MAP = {
 }
 
 # ======================================================================
-# CORE PROCESSING PIPELINE (PLACEHOLDER FOR YOUR ENGINE LOGIC)
+# REAL PDF PROCESSING PIPELINE
 # ======================================================================
 def process_pdf_document(input_path, output_path, mode, lang):
     """
-    Placeholder function for your PDF processing engine logic.
-    Replace or connect your existing core functions (e.g., PyMuPDF, docx builder) here.
+    Reads text and pages from the uploaded PDF and writes them into a .docx file.
     """
-    from docx import Document
     doc = Document()
     doc.add_heading('Converted Document Output', 0)
-    doc.add_paragraph(f"Processed file: {os.path.basename(input_path)}")
-    doc.add_paragraph(f"Extraction Mode: {mode}")
-    doc.add_paragraph(f"Language Setting: {lang}")
+    
+    # Open the uploaded PDF using PyMuPDF (fitz)
+    pdf_document = fitz.open(input_path)
+    
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text = page.get_text("text")
+        
+        # Add Page Heading
+        doc.add_heading(f'Page {page_num + 1}', level=2)
+        
+        if text.strip():
+            doc.add_paragraph(text)
+        else:
+            doc.add_paragraph("[No readable text found on this page]")
+            
+    pdf_document.close()
     doc.save(output_path)
     return True
 
@@ -41,7 +55,7 @@ def run_streamlit_app():
     st.set_page_config(page_title="Document Processor & Converter", layout="wide", page_icon="📄")
     
     st.title("📄 PDF / Document Processing Pipeline")
-    st.write("Convert complex PDFs with LaTeX equations into editable Word (.docx) and PowerPoint (.pptx) documents.")
+    st.write("Convert complex PDFs with text into editable Word (.docx) documents.")
 
     # Sidebar Options
     st.sidebar.header("⚙️ Configuration Options")
@@ -66,7 +80,6 @@ def run_streamlit_app():
         
         if st.button("🚀 Start Processing", type="primary"):
             with st.spinner("Processing document... Please wait."):
-                # Save uploaded file to temporary directory
                 with tempfile.TemporaryDirectory() as temp_dir:
                     input_pdf_path = os.path.join(temp_dir, uploaded_file.name)
                     with open(input_pdf_path, "wb") as f:
@@ -75,7 +88,7 @@ def run_streamlit_app():
                     output_docx_path = os.path.join(temp_dir, "Converted_Document.docx")
                     
                     try:
-                        # Process document
+                        # Process PDF
                         process_pdf_document(
                             input_pdf_path, 
                             output_docx_path, 
