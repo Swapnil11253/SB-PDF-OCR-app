@@ -1,15 +1,8 @@
-streamlit>=1.32
-numpy
-pypdf
-pypdfium2==4.30.0
-lxml
+streamlit
+python-docx
+python-pptx
+PyMuPDF
+matplotlib
+pillow
 latex2mathml
-mathml2omml
-
-# Heavy ML deps — install these separately, GPU build recommended
-# (see README.md for exact commands, since paddlepaddle-gpu needs a
-# special index URL and mineru[all] pulls a large model stack)
-mineru[all]
-pix2tex[gui]
-paddleocr
-torch
+lxml
